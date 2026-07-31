@@ -15,6 +15,13 @@ spring:
           time_zone: UTC
   flyway:
     enabled: true
+  rabbitmq:
+    host: ${RABBITMQ_HOST:localhost}
+    port: ${RABBITMQ_PORT:5672}
+    username: ${RABBITMQ_USERNAME:validator_doc}
+    password: ${RABBITMQ_PASSWORD:validator_doc}
+    publisher-confirm-type: correlated
+    publisher-returns: true
   servlet:
     multipart:
       max-file-size: 20MB
@@ -41,3 +48,12 @@ validator:
       access-key: ${MINIO_ACCESS_KEY:minioadmin}
       secret-key: ${MINIO_SECRET_KEY:minioadmin}
       bucket: ${MINIO_BUCKET:validator-documents}
+
+app:
+  clamav:
+    host: ${CLAMAV_HOST:localhost}
+    port: ${CLAMAV_PORT:3310}
+    timeout-millis: ${CLAMAV_TIMEOUT_MILLIS:10000}
+    enabled: ${CLAMAV_ENABLED:true}
+  outbox:
+    publish-delay-ms: ${OUTBOX_PUBLISH_DELAY_MS:1000}
