@@ -2,17 +2,17 @@ package br.com.chacarakairo.validatordoc.storage;
 
 import br.com.chacarakairo.validatordoc.document.DocumentRequirements;
 import br.com.chacarakairo.validatordoc.document.DocumentSlot;
-import br.com.chacarakairo.validatordoc.document.RequiredDocumentSlot;
 import br.com.chacarakairo.validatordoc.processing.ProcessingJob;
 import br.com.chacarakairo.validatordoc.processing.ProcessingQueue;
 import br.com.chacarakairo.validatordoc.processing.ProcessingStrategy;
 import br.com.chacarakairo.validatordoc.session.DocumentSession;
 import br.com.chacarakairo.validatordoc.session.DocumentSessionRepository;
-import br.com.chacarakairo.validatordoc.session.DocumentSessionStatus;
 import java.io.ByteArrayInputStream;
+import java.time.Instant;
 import java.time.OffsetDateTime;
-import java.util.List;
+import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -43,13 +43,13 @@ public class DocumentUploadService {
         DocumentSession session = sessionRepository.findById(sessionId)
             .orElseThrow(() -> new IllegalArgumentException("Sessão documental não encontrada."));
 
-        RequiredDocumentSlot requirement = DocumentRequirements.forType(session.getDocumentType()).stream()
-            .filter(item -> item.slot() == slot)
-            .findFirst()
-            .orElseThrow(() -> new IllegalArgumentException("Slot não permitido para este tipo documental."));
+        Set<String> acceptedTypes = DocumentRequirements.acceptedMediaTypes(session.getDocumentType(), slot);
+        if (acceptedTypes.isEmpty()) {
+            throw new IllegalArgumentException("Slot não permitido para este tipo documental.");
+        }
 
         InspectedFile inspected = inspector.inspect(multipartFile);
-        if (!requirement.acceptedMediaTypes().contains(inspected.inspection().detectedMediaType())) {
+        if (!acceptedTypes.contains(inspected.inspection().detectedMediaType())) {
             throw new IllegalArgumentException("Formato não aceito para este slot.");
         }
         if (fileRepository.existsBySessionIdAndSha256(sessionId, inspected.inspection().sha256())) {
@@ -78,7 +78,7 @@ public class DocumentUploadService {
         );
 
         try {
-            StoredDocumentFile saved = fileRepository.save(storedFile);
+            StoredDocumentFile saved = fileRepository.saveAndFlush(storedFile);
             updateSessionIfComplete(session);
             return saved;
         } catch (RuntimeException exception) {
@@ -88,15 +88,18 @@ public class DocumentUploadService {
     }
 
     private void updateSessionIfComplete(DocumentSession session) {
-        List<RequiredDocumentSlot> required = DocumentRequirements.forType(session.getDocumentType());
-        List<StoredDocumentFile> files = fileRepository.findBySessionId(session.getId());
-        boolean complete = required.stream().allMatch(requirement ->
-            files.stream().anyMatch(file -> file.getSlot() == requirement.slot()));
+        Set<DocumentSlot> uploadedSlots = fileRepository.findBySessionId(session.getId()).stream()
+            .map(StoredDocumentFile::getSlot)
+            .collect(Collectors.toSet());
 
-        if (complete) {
-            session.changeStatus(DocumentSessionStatus.UPLOADED);
+        if (DocumentRequirements.isComplete(session.getDocumentType(), uploadedSlots)) {
+            session.markUploaded(Instant.now());
             sessionRepository.save(session);
-            queue.publish(new ProcessingJob(session.getId(), ProcessingStrategy.forType(session.getDocumentType()), OffsetDateTime.now()));
+            queue.publish(new ProcessingJob(
+                session.getId(),
+                ProcessingStrategy.forType(session.getDocumentType()),
+                OffsetDateTime.now()
+            ));
         }
     }
 
