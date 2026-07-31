@@ -60,6 +60,11 @@ public class DocumentSession {
         this.updatedAt = now;
     }
 
+    public void markValid(Instant now) {
+        this.status = DocumentSessionStatus.VALID;
+        this.updatedAt = now;
+    }
+
     public UUID getId() { return id; }
     public String getExternalPersonId() { return externalPersonId; }
     public DocumentType getDocumentType() { return documentType; }
