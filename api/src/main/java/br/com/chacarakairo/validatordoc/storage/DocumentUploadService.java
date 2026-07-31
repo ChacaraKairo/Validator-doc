@@ -5,11 +5,16 @@ import br.com.chacarakairo.validatordoc.document.DocumentSlot;
 import br.com.chacarakairo.validatordoc.processing.ProcessingJob;
 import br.com.chacarakairo.validatordoc.processing.ProcessingQueue;
 import br.com.chacarakairo.validatordoc.processing.ProcessingStrategy;
+import br.com.chacarakairo.validatordoc.security.DocumentSanitizer;
+import br.com.chacarakairo.validatordoc.security.MalwareScanner;
+import br.com.chacarakairo.validatordoc.security.SanitizedFile;
 import br.com.chacarakairo.validatordoc.session.DocumentSession;
 import br.com.chacarakairo.validatordoc.session.DocumentSessionRepository;
 import java.io.ByteArrayInputStream;
+import java.security.MessageDigest;
 import java.time.Instant;
 import java.time.OffsetDateTime;
+import java.util.HexFormat;
 import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
@@ -23,17 +28,23 @@ public class DocumentUploadService {
     private final DocumentSessionRepository sessionRepository;
     private final StoredDocumentFileRepository fileRepository;
     private final DocumentFileInspector inspector;
+    private final MalwareScanner malwareScanner;
+    private final DocumentSanitizer sanitizer;
     private final ObjectStorage storage;
     private final ProcessingQueue queue;
 
     public DocumentUploadService(DocumentSessionRepository sessionRepository,
                                  StoredDocumentFileRepository fileRepository,
                                  DocumentFileInspector inspector,
+                                 MalwareScanner malwareScanner,
+                                 DocumentSanitizer sanitizer,
                                  ObjectStorage storage,
                                  ProcessingQueue queue) {
         this.sessionRepository = sessionRepository;
         this.fileRepository = fileRepository;
         this.inspector = inspector;
+        this.malwareScanner = malwareScanner;
+        this.sanitizer = sanitizer;
         this.storage = storage;
         this.queue = queue;
     }
@@ -49,10 +60,16 @@ public class DocumentUploadService {
         }
 
         InspectedFile inspected = inspector.inspect(multipartFile);
-        if (!acceptedTypes.contains(inspected.inspection().detectedMediaType())) {
+        String detectedMediaType = inspected.inspection().detectedMediaType();
+        if (!acceptedTypes.contains(detectedMediaType)) {
             throw new IllegalArgumentException("Formato não aceito para este slot.");
         }
-        if (fileRepository.existsBySessionIdAndSha256(sessionId, inspected.inspection().sha256())) {
+
+        malwareScanner.assertClean(inspected.bytes());
+        SanitizedFile sanitized = sanitizer.sanitize(inspected.bytes(), detectedMediaType);
+        String storedSha256 = sha256(sanitized.content());
+
+        if (fileRepository.existsBySessionIdAndSha256(sessionId, storedSha256)) {
             throw new IllegalArgumentException("Este arquivo já foi enviado para a sessão.");
         }
         if (fileRepository.findBySessionIdAndSlot(sessionId, slot).isPresent()) {
@@ -61,17 +78,17 @@ public class DocumentUploadService {
 
         UUID fileId = UUID.randomUUID();
         String objectKey = "sessions/%s/%s/%s".formatted(sessionId, slot.name().toLowerCase(), fileId);
-        StoredObject object = storage.put(objectKey, inspected.inspection().detectedMediaType(),
-            inspected.inspection().sizeBytes(), new ByteArrayInputStream(inspected.bytes()));
+        StoredObject object = storage.put(objectKey, sanitized.mediaType(), sanitized.content().length,
+            new ByteArrayInputStream(sanitized.content()));
 
         StoredDocumentFile storedFile = new StoredDocumentFile(
             fileId,
             session,
             slot,
             sanitizeFilename(multipartFile.getOriginalFilename()),
-            inspected.inspection().detectedMediaType(),
-            inspected.inspection().sizeBytes(),
-            inspected.inspection().sha256(),
+            sanitized.mediaType(),
+            sanitized.content().length,
+            storedSha256,
             object.bucket(),
             object.key(),
             OffsetDateTime.now()
@@ -100,6 +117,14 @@ public class DocumentUploadService {
                 ProcessingStrategy.forType(session.getDocumentType()),
                 OffsetDateTime.now()
             ));
+        }
+    }
+
+    private String sha256(byte[] content) {
+        try {
+            return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(content));
+        } catch (Exception exception) {
+            throw new IllegalStateException("Não foi possível calcular o SHA-256.", exception);
         }
     }
 
