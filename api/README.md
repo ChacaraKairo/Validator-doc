@@ -10,10 +10,8 @@ API independente para ingestão, armazenamento e validação documental.
 
 ## Executar localmente
 
-Na raiz do repositório:
-
 ```bash
-docker compose up -d postgres minio
+docker compose up -d postgres minio rabbitmq clamav
 cd api
 mvn spring-boot:run
 ```
@@ -21,76 +19,62 @@ mvn spring-boot:run
 Serviços locais:
 
 - API: `http://localhost:8080`
-- MinIO API: `http://localhost:9000`
-- MinIO Console: `http://localhost:9001`
-- usuário MinIO: `minioadmin`
-- senha MinIO: `minioadmin`
+- MinIO Console: `http://localhost:9001` (`minioadmin` / `minioadmin`)
+- RabbitMQ Management: `http://localhost:15672` (`validator_doc` / `validator_doc`)
+- ClamAV: `localhost:3310`
 
-Health check:
+O ClamAV pode demorar na primeira inicialização enquanto baixa as definições de vírus. Confirme os serviços com:
 
 ```bash
-curl http://localhost:8080/actuator/health
+docker compose ps
 ```
 
-## Criar uma sessão documental
+## Fluxo de upload
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/document-sessions \
   -H 'Content-Type: application/json' \
-  -d '{
-    "externalPersonId": "person-123",
-    "documentType": "RESIDENCE_PROOF"
-  }'
-```
+  -d '{"externalPersonId":"person-123","documentType":"RESIDENCE_PROOF"}'
 
-A resposta informa os slots permitidos e as combinações que concluem o upload.
-
-## Enviar um arquivo
-
-```bash
-curl -X POST 'http://localhost:8080/api/v1/document-sessions/{sessionId}/files?slot=DOCUMENT' \
+curl -X POST \
+  'http://localhost:8080/api/v1/document-sessions/{sessionId}/files?slot=DOCUMENT' \
   -F 'file=@/caminho/comprovante.pdf'
 ```
 
-Formatos aceitos globalmente:
+O pipeline executa, nesta ordem:
 
-- `image/jpeg`
-- `image/png`
-- `application/pdf`
+1. validação do slot e do tamanho;
+2. detecção do MIME real com Apache Tika;
+3. conferência da assinatura binária;
+4. varredura por malware via protocolo `INSTREAM` do ClamAV;
+5. sanitização do conteúdo;
+6. cálculo SHA-256 da versão sanitizada;
+7. deduplicação por sessão;
+8. armazenamento privado no MinIO;
+9. persistência dos metadados e do evento Outbox na mesma transação;
+10. publicação confirmada no RabbitMQ;
+11. consumo do job pelo processador correspondente.
 
-O formato permitido depende do tipo documental e do slot.
+## Sanitização
 
-### Slots por documento
+- JPG e PNG são decodificados e reencodados, removendo EXIF, GPS, thumbnails e metadados anexos.
+- PDFs protegidos por senha são rejeitados.
+- PDFs são carregados e salvos novamente com PDFBox, removendo ações de abertura, ações de catálogo e árvores de nomes que podem conter JavaScript ou anexos.
+- O hash e o tamanho persistidos correspondem ao arquivo sanitizado efetivamente armazenado.
 
-- RG e CIN: `FRONT` + `BACK`, somente JPG/PNG;
-- CNH: `FRONT` + `BACK` em JPG/PNG **ou** `DOCUMENT` em PDF;
-- Coren: `FRONT` + `BACK`, somente JPG/PNG;
-- antecedentes criminais: `DOCUMENT`, somente PDF;
-- certificado: `DOCUMENT`, JPG/PNG/PDF;
-- comprovante de residência: `DOCUMENT`, JPG/PNG/PDF.
+## Outbox e RabbitMQ
 
-## Segurança do upload
+O upload não publica diretamente no broker. Ele grava uma linha em `processing_outbox` junto com a mudança da sessão para `UPLOADED`. Um publicador agendado:
 
-O pipeline:
+- busca eventos pendentes;
+- envia para `validator-doc.processing`;
+- aguarda publisher confirm;
+- marca `published_at` somente após `ACK` do RabbitMQ;
+- mantém tentativas e último erro em caso de falha.
 
-1. limita o arquivo a 20 MB;
-2. detecta o MIME real com Apache Tika;
-3. confere a assinatura binária de JPG, PNG ou PDF;
-4. calcula SHA-256;
-5. bloqueia o mesmo hash na mesma sessão;
-6. bloqueia o reenvio para um slot já preenchido;
-7. armazena o objeto no MinIO;
-8. grava metadados no PostgreSQL;
-9. atualiza a sessão para `UPLOADED` quando os slots estiverem completos;
-10. prepara o job de processamento.
+A fila durável é `validator-doc.processing.jobs`.
 
-Para `RESIDENCE_PROOF`, a estratégia `STORAGE_ONLY` é concluída sem OCR e a sessão passa para `VALID` após o armazenamento.
-
-## Consultar uma sessão
-
-```bash
-curl http://localhost:8080/api/v1/document-sessions/{id}
-```
+Para `RESIDENCE_PROOF`, o consumidor `STORAGE_ONLY` não executa OCR e muda a sessão para `VALID`.
 
 ## Testes
 
@@ -98,28 +82,4 @@ curl http://localhost:8080/api/v1/document-sessions/{id}
 mvn test
 ```
 
-## Estado atual
-
-Implementado:
-
-- Spring Boot e Java 21;
-- sessões documentais;
-- requisitos e slots por tipo;
-- upload multipart;
-- detecção de MIME e assinatura binária;
-- SHA-256 e deduplicação;
-- armazenamento MinIO;
-- metadados PostgreSQL;
-- migrations Flyway;
-- preparação da fila;
-- pipeline `STORAGE_ONLY`;
-- erros REST padronizados;
-- Actuator e Docker Compose.
-
-Próximos passos:
-
-- substituir a fila interna por RabbitMQ/outbox;
-- antivírus com ClamAV;
-- sanitização de imagens e PDFs;
-- autenticação e isolamento por organização;
-- processadores de identidade, CNH, Coren, antecedentes e certificados.
+Nos testes, ClamAV e listeners RabbitMQ ficam desabilitados para não exigir serviços externos.
