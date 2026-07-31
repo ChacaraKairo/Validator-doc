@@ -33,17 +33,23 @@ public final class DocumentRequirements {
             .toList();
     }
 
+    public static List<Set<DocumentSlot>> completionOptions(DocumentType type) {
+        return switch (type) {
+            case RG, CIN, COREN_CARD -> List.of(Set.of(DocumentSlot.FRONT, DocumentSlot.BACK));
+            case CNH -> List.of(
+                Set.of(DocumentSlot.FRONT, DocumentSlot.BACK),
+                Set.of(DocumentSlot.DOCUMENT)
+            );
+            case CRIMINAL_RECORD_CERTIFICATE, COURSE_CERTIFICATE, RESIDENCE_PROOF ->
+                List.of(Set.of(DocumentSlot.DOCUMENT));
+        };
+    }
+
     public static Set<String> acceptedMediaTypes(DocumentType type, DocumentSlot slot) {
         return ALLOWED.getOrDefault(type, Map.of()).getOrDefault(slot, Set.of());
     }
 
     public static boolean isComplete(DocumentType type, Set<DocumentSlot> uploadedSlots) {
-        return switch (type) {
-            case RG, CIN, COREN_CARD -> uploadedSlots.containsAll(Set.of(DocumentSlot.FRONT, DocumentSlot.BACK));
-            case CNH -> uploadedSlots.contains(DocumentSlot.DOCUMENT)
-                || uploadedSlots.containsAll(Set.of(DocumentSlot.FRONT, DocumentSlot.BACK));
-            case CRIMINAL_RECORD_CERTIFICATE, COURSE_CERTIFICATE, RESIDENCE_PROOF ->
-                uploadedSlots.contains(DocumentSlot.DOCUMENT);
-        };
+        return completionOptions(type).stream().anyMatch(uploadedSlots::containsAll);
     }
 }
