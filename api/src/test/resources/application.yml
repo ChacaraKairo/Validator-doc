@@ -8,6 +8,10 @@ spring:
       ddl-auto: create-drop
   flyway:
     enabled: false
+  rabbitmq:
+    listener:
+      simple:
+        auto-startup: false
 validator:
   storage:
     minio:
@@ -15,3 +19,11 @@ validator:
       access-key: minioadmin
       secret-key: minioadmin
       bucket: validator-doc-test
+app:
+  clamav:
+    host: localhost
+    port: 3310
+    timeout-millis: 1000
+    enabled: false
+  outbox:
+    publish-delay-ms: 3600000
