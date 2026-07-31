@@ -6,7 +6,6 @@ import java.time.Instant;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
-import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 @Component
@@ -20,7 +19,7 @@ public class LoggingProcessingQueue implements ProcessingQueue {
     }
 
     @Override
-    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    @Transactional
     public void publish(ProcessingJob job) {
         LOGGER.info("processing_job_prepared sessionId={} strategy={} requestedAt={}",
             job.sessionId(), job.strategy(), job.requestedAt());
