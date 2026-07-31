@@ -1,0 +1,63 @@
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      POSTGRES_DB: validator_doc
+      POSTGRES_USER: validator_doc
+      POSTGRES_PASSWORD: validator_doc
+    ports:
+      - "5432:5432"
+    volumes:
+      - validator_doc_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U validator_doc -d validator_doc"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - validator_doc_minio:/data
+
+  rabbitmq:
+    image: rabbitmq:4-management-alpine
+    environment:
+      RABBITMQ_DEFAULT_USER: validator_doc
+      RABBITMQ_DEFAULT_PASS: validator_doc
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - validator_doc_rabbitmq:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  clamav:
+    image: clamav/clamav:stable
+    ports:
+      - "3310:3310"
+    volumes:
+      - validator_doc_clamav:/var/lib/clamav
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/clamdcheck.sh"]
+      interval: 30s
+      timeout: 10s
+      retries: 20
+      start_period: 120s
+
+volumes:
+  validator_doc_postgres:
+  validator_doc_minio:
+  validator_doc_rabbitmq:
+  validator_doc_clamav:
